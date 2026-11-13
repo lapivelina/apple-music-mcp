@@ -1,6 +1,5 @@
 import type { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { hasCapabilityPath, hasCapabilityToken } from './capability-access';
 import { AppleMusicApi, type SongLookupInput } from './apple';
 import { refreshRecentListeningAnalytics } from "./analytics";
 import { applySecurityHeaders, HttpRequestError, readCookie, readUrlEncodedForm, secureEqual } from "./http-security";
@@ -90,9 +89,6 @@ async function getOAuthProvider(): Promise<OAuthProvider<Env>> {
     if (env.MCP_API_KEY && await secureEqual(token, env.MCP_API_KEY)) {
       return { props: { userId: "owner", clientId: "static-bearer", authentication: "static-bearer" } };
     }
-    if (await hasCapabilityToken(token, env.POKE_MCP_API_KEY ?? env.MCP_API_KEY)) {
-      return { props: { userId: "owner", clientId: "owner-shared-url", authentication: "shared-capability-bearer" } };
-    }
     return null;
   }
 });
@@ -100,12 +96,6 @@ async function getOAuthProvider(): Promise<OAuthProvider<Env>> {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const path = new URL(request.url).pathname;
-    if (await hasCapabilityPath(path, env.POKE_MCP_API_KEY ?? env.MCP_API_KEY)) {
-      const originError = rejectCrossOriginRequest(request);
-      if (originError) return originError;
-      return handleMcp(request, { env, clientId: 'owner-shared-url' });
-    }
     return (await getOAuthProvider()).fetch(request, env, ctx);
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
