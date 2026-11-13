@@ -1,4 +1,4 @@
-export const SETUP_SESSION_TTL_MS = 10 * 60 * 1_000;
+export const SETUP_SESSION_TTL_MS = 30 * 60 * 1_000;
 
 export type SetupSession = { version: 1; sessionId: string; expiresAt: number };
 

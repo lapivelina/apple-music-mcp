@@ -59,6 +59,13 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
     session = await verifySetupSession(sessionToken, env.SETUP_TOKEN);
     setSessionCookie = true;
   }
+  if (session && !setSessionCookie) {
+    // Rolling renewal: loading the setup page restarts the session window, so
+    // time spent in Apple's authorization flow cannot silently burn it down.
+    sessionToken = await createSetupSession(env.SETUP_TOKEN);
+    session = await verifySetupSession(sessionToken, env.SETUP_TOKEN);
+    setSessionCookie = true;
+  }
   if (!session || !sessionToken) return setupLoginPage();
 
   if (!hasAppleCredentials(env)) {
@@ -160,7 +167,13 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
 export async function saveAppleAuthToken(request: Request, env: Env): Promise<Response> {
   const sessionToken = readCookie(request, SETUP_SESSION_COOKIE);
   const session = sessionToken ? await verifySetupSession(sessionToken, env.SETUP_TOKEN) : undefined;
-  if (!session) return secureText("Unauthorized", 401);
+  if (!session) {
+    console.warn(JSON.stringify({
+      event: "apple_token_save_rejected",
+      reason: sessionToken ? "session_invalid_or_expired" : "no_session_cookie"
+    }));
+    return secureText("Unauthorized", 401);
+  }
 
   let body: { token?: unknown; state?: unknown };
   try {
@@ -237,7 +250,7 @@ function secureText(message: string, status: number): Response {
 }
 
 function setupSessionCookie(token: string, secure: boolean): string {
-  return `${SETUP_SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Strict; Max-Age=600${secure ? "; Secure" : ""}`;
+  return `${SETUP_SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${Math.floor(SETUP_SESSION_TTL_MS / 1_000)}${secure ? "; Secure" : ""}`;
 }
 
 function bearerToken(request: Request): string | undefined {
