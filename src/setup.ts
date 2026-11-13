@@ -100,6 +100,11 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
       "form-action 'self'"
     ].join("; ")
   }));
+  // Apple's web authorization verifies the calling origin; with "no-referrer"
+  // the browser sends no Referer to authorize.music.apple.com and the JWT
+  // check fails there (ERROR_FAILED_TO_VERIFY_JWT) even though the same token
+  // passes the catalog API. Send the origin on cross-origin HTTPS requests.
+  headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   if (setSessionCookie) headers.set("Set-Cookie", setupSessionCookie(sessionToken, url.protocol === "https:"));
 
   return new Response(`<!doctype html>
@@ -182,7 +187,7 @@ export async function setupMinimalPage(request: Request, env: Env): Promise<Resp
   const session = sessionToken ? await verifySetupSession(sessionToken, env.SETUP_TOKEN) : undefined;
   if (!session) return secureText("Unauthorized", 401);
   const developerToken = await new AppleMusicApi(env).developerToken();
-  const headers = new Headers({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+  const headers = new Headers({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "strict-origin-when-cross-origin" });
   return new Response(`<!doctype html>
 <html lang="en">
 <head>
@@ -282,6 +287,7 @@ function html(title: string, body: string, options: { status?: number; cookie?: 
     "Content-Type": "text/html; charset=utf-8",
     "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
   }));
+  headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   if (options.cookie) headers.set("Set-Cookie", options.cookie);
   return new Response(
     `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
