@@ -101,7 +101,7 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Connect Apple Music</title>
-  <script nonce="${nonce}" src="https://js-cdn.music.apple.com/musickit/v1/musickit.js"></script>
+  <script nonce="${nonce}" src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" async></script>
   <style nonce="${nonce}">
     body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f7f7f4; color: #1d1d1b; }
     main { max-width: 680px; margin: 8vh auto; padding: 0 24px; }
@@ -120,14 +120,26 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
   </main>
   <script nonce="${nonce}">
     const status = document.getElementById("status");
+    let configurePromise;
+    function ensureConfigured() {
+      if (!configurePromise) {
+        configurePromise = (async () => {
+          if (typeof MusicKit === "undefined") {
+            await new Promise((resolve) => document.addEventListener("musickitloaded", resolve, { once: true }));
+          }
+          await MusicKit.configure({
+            developerToken: ${scriptJson(developerToken)},
+            app: { name: "Apple Music MCP", build: "0.1.0" },
+            storefrontId: ${scriptJson(env.APPLE_STOREFRONT ?? "us")}
+          });
+        })();
+      }
+      return configurePromise;
+    }
     document.getElementById("connect").addEventListener("click", async () => {
       try {
         status.textContent = "Opening Apple Music authorization...";
-        await MusicKit.configure({
-          developerToken: ${scriptJson(developerToken)},
-          app: { name: "Apple Music MCP", build: "0.1.0" },
-          storefrontId: ${scriptJson(env.APPLE_STOREFRONT ?? "us")}
-        });
+        await ensureConfigured();
         const token = await MusicKit.getInstance().authorize();
         const response = await fetch("/auth/apple/token", {
           method: "POST",
