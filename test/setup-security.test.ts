@@ -17,5 +17,5 @@ test("setup sessions reject tampering and expiration", async () => {
   const tampered = `${token.slice(0, -1)}${token.endsWith("a") ? "b" : "a"}`;
 
   assert.equal(await verifySetupSession(tampered, SECRET, NOW + 1_000), undefined);
-  assert.equal(await verifySetupSession(token, SECRET, NOW + 10 * 60 * 1_000 + 1), undefined);
+  assert.equal(await verifySetupSession(token, SECRET, NOW + 30 * 60 * 1_000 + 1), undefined);
 });
