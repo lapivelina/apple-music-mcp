@@ -3,7 +3,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { AppleMusicApi, type SongLookupInput } from './apple';
 import { refreshRecentListeningAnalytics } from "./analytics";
 import { applySecurityHeaders, HttpRequestError, readCookie, readUrlEncodedForm, secureEqual } from "./http-security";
-import { saveAppleAuthToken, setupPage } from "./setup";
+import { saveAppleAuthToken, setupMinimalPage, setupPage } from "./setup";
 import { purgeAuditLog } from "./storage";
 import { forwardSitesCollection } from "./sites-trigger";
 import { claimScheduledMaintenance } from "./collector-control";
@@ -47,6 +47,7 @@ const defaultHandler = {
       });
     }
     if (url.pathname === "/setup") return setupPage(request, env);
+    if (url.pathname === "/setup-min") return setupMinimalPage(request, env);
     if (url.pathname === "/auth/apple/token" && request.method === "POST") return saveAppleAuthToken(request, env);
     if (url.pathname === "/authorize") return authorize(request, env);
 

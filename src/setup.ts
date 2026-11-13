@@ -177,6 +177,48 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
 </html>`, { headers });
 }
 
+export async function setupMinimalPage(request: Request, env: Env): Promise<Response> {
+  const sessionToken = readCookie(request, SETUP_SESSION_COOKIE);
+  const session = sessionToken ? await verifySetupSession(sessionToken, env.SETUP_TOKEN) : undefined;
+  if (!session) return secureText("Unauthorized", 401);
+  const developerToken = await new AppleMusicApi(env).developerToken();
+  const headers = new Headers({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+  return new Response(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>MusicKit minimal authorize test</title>
+  <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js"></script>
+</head>
+<body>
+  <main>
+    <h1>Minimal authorize test</h1>
+    <p>Bare MusicKit v3 flow: no custom CSP, no fetch hooks, no unauthorize, no storefront.</p>
+    <button id="go">Authorize</button>
+    <pre id="out">Waiting.</pre>
+  </main>
+  <script>
+    document.getElementById("go").addEventListener("click", async () => {
+      const out = document.getElementById("out");
+      try {
+        out.textContent = "configuring...";
+        await MusicKit.configure({
+          developerToken: ${scriptJson(developerToken)},
+          app: { name: "Apple Music MCP", build: "0.1.0" }
+        });
+        out.textContent = "authorizing...";
+        const token = await MusicKit.getInstance().authorize();
+        sessionStorage.setItem("mut", token);
+        out.textContent = "SUCCESS: user token received (length " + token.length + "), stashed in sessionStorage.";
+      } catch (error) {
+        out.textContent = "ERROR name=" + (error && error.name) + " message=" + (error && error.message);
+      }
+    });
+  </script>
+</body>
+</html>`, { headers });
+}
+
 export async function saveAppleAuthToken(request: Request, env: Env): Promise<Response> {
   const sessionToken = readCookie(request, SETUP_SESSION_COOKIE);
   const session = sessionToken ? await verifySetupSession(sessionToken, env.SETUP_TOKEN) : undefined;
