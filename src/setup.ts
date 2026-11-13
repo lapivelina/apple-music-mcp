@@ -127,6 +127,17 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
   </main>
   <script nonce="${nonce}">
     const status = document.getElementById("status");
+    // MusicKit v3 calls Apple's web-player logout while authorizing whenever a
+    // stale token is around; that endpoint rejects cross-site calls with 403
+    // and the rejection aborts authorize(). Answer it locally instead.
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.startsWith("https://play.itunes.apple.com/WebObjects/MZPlay.woa/wa/webPlayerLogout")) {
+        return Promise.resolve(new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return nativeFetch(input, init);
+    };
     let configurePromise;
     function ensureConfigured() {
       if (!configurePromise) {
@@ -147,13 +158,15 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
       try {
         status.textContent = "Opening Apple Music authorization...";
         await ensureConfigured();
-        const token = await MusicKit.getInstance().authorize();
+        const music = MusicKit.getInstance();
+        await music.unauthorize().catch(() => {});
+        const token = await music.authorize();
         const response = await fetch("/auth/apple/token", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ token, state: ${scriptJson(state)} })
         });
-        if (!response.ok) throw new Error(await response.text());
+        if (!response.ok) throw new Error("Server: " + (await response.text()));
         status.textContent = "Apple Music connected. You can close this tab.";
       } catch (error) {
         status.textContent = error instanceof Error ? error.message : String(error);
