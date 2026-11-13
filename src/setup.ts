@@ -1,5 +1,5 @@
 import { AppleMusicApi, hasAppleCredentials } from "./apple";
-import { base64UrlEncode, randomToken } from "./crypto";
+import { base64UrlEncode, decryptJson, encryptJson, randomToken } from "./crypto";
 import {
   applySecurityHeaders,
   HttpRequestError,
@@ -9,7 +9,19 @@ import {
   secureEqual
 } from "./http-security";
 import { createSetupSession, SETUP_SESSION_TTL_MS, verifySetupSession } from "./setup-session";
-import { consumeConfigValue, getConfig, saveAppleToken, setConfig } from "./storage";
+import {
+  consumeConfigValue,
+  consumeInviteByHash,
+  createApiKey,
+  createInvite,
+  createUser,
+  findInvite,
+  getConfig,
+  hashSecret,
+  PRIMARY_USER_ID,
+  saveAppleToken,
+  setConfig
+} from "./storage";
 import type { Env } from "./types";
 
 const SETUP_SESSION_COOKIE = "AM_MCP_SETUP_SESSION";
@@ -17,7 +29,31 @@ const APPLE_AUTH_STATE_KEY = "apple_auth_state_v2";
 const SETUP_FORM_MAX_BYTES = 2_048;
 const APPLE_TOKEN_BODY_MAX_BYTES = 16_384;
 
-type StoredAppleAuthState = { version: 1; stateHash: string; sessionId: string; expiresAt: number };
+type StoredAppleAuthState = {
+  version: 1;
+  stateHash: string;
+  sessionId: string;
+  expiresAt: number;
+  userId?: string;
+  inviteHash?: string;
+};
+
+type JoinBinding = { userId: string; inviteHash: string };
+
+function joinBindingKey(sessionId: string): string {
+  return `join_binding:${sessionId}`;
+}
+
+function parseJoinBinding(value: string | undefined): JoinBinding | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as Partial<JoinBinding>;
+    if (typeof parsed.userId !== "string" || typeof parsed.inviteHash !== "string") return undefined;
+    return { userId: parsed.userId, inviteHash: parsed.inviteHash };
+  } catch {
+    return undefined;
+  }
+}
 
 export async function setupPage(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET" && request.method !== "POST") {
@@ -62,9 +98,18 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
   if (session && !setSessionCookie) {
     // Rolling renewal: loading the setup page restarts the session window, so
     // time spent in Apple's authorization flow cannot silently burn it down.
+    const previousSessionId = session.sessionId;
     sessionToken = await createSetupSession(env.SETUP_TOKEN);
     session = await verifySetupSession(sessionToken, env.SETUP_TOKEN);
     setSessionCookie = true;
+    if (session && previousSessionId !== session.sessionId) {
+      // Carry a join binding (invited user) across the renewal.
+      const binding = await getConfig(env, joinBindingKey(previousSessionId));
+      if (binding) {
+        await setConfig(env, joinBindingKey(session.sessionId), binding);
+        await consumeConfigValue(env, joinBindingKey(previousSessionId), binding);
+      }
+    }
   }
   if (!session || !sessionToken) return setupLoginPage();
 
@@ -77,11 +122,13 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
   }
 
   const state = await randomToken();
+  const joinBinding = parseJoinBinding(await getConfig(env, joinBindingKey(session.sessionId)));
   const storedState: StoredAppleAuthState = {
     version: 1,
     stateHash: await sha256Token(state),
     sessionId: session.sessionId,
-    expiresAt: Date.now() + SETUP_SESSION_TTL_MS
+    expiresAt: Date.now() + SETUP_SESSION_TTL_MS,
+    ...(joinBinding ? { userId: joinBinding.userId, inviteHash: joinBinding.inviteHash } : {})
   };
   await setConfig(env, APPLE_AUTH_STATE_KEY, JSON.stringify(storedState));
   const developerToken = await new AppleMusicApi(env).developerToken();
@@ -260,11 +307,18 @@ export async function saveAppleAuthToken(request: Request, env: Env): Promise<Re
     return secureText("Auth state mismatch or expired", 403);
   }
 
-  await saveAppleToken(env, body.token);
-  const api = new AppleMusicApi(env);
+  const tokenUserId = storedState.userId ?? PRIMARY_USER_ID;
+  await saveAppleToken(env, body.token, tokenUserId);
+  if (storedState.inviteHash) {
+    const consumed = await consumeInviteByHash(env, storedState.inviteHash);
+    if (!consumed) {
+      console.warn(JSON.stringify({ event: "invite_consume_failed", userId: tokenUserId }));
+    }
+  }
+  const api = new AppleMusicApi(env, tokenUserId);
   const storefront = await api.refreshAndStoreStorefront().catch(() => undefined);
   const headers = applySecurityHeaders(new Headers({ "Content-Type": "application/json" }));
-  return new Response(JSON.stringify({ ok: true, storefront }), { headers });
+  return new Response(JSON.stringify({ ok: true, storefront, userId: tokenUserId }), { headers });
 }
 
 function setupLoginPage(error?: string, status = 200): Response {
@@ -350,4 +404,95 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
+const USER_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,31}$/;
+
+export async function adminCreateInvite(request: Request, env: Env): Promise<Response> {
+  const bearer = bearerToken(request);
+  if (!bearer || !env.SETUP_TOKEN || !(await secureEqual(bearer, env.SETUP_TOKEN))) {
+    return secureText("Unauthorized", 401);
+  }
+  let body: { userId?: unknown; displayName?: unknown };
+  try {
+    body = JSON.parse(await readBoundedText(request, SETUP_FORM_MAX_BYTES, "application/json")) as {
+      userId?: unknown;
+      displayName?: unknown;
+    };
+  } catch {
+    return secureText("Invalid JSON", 400);
+  }
+  const userId = typeof body.userId === "string" ? body.userId : "";
+  const displayName = typeof body.displayName === "string" ? body.displayName.slice(0, 80) : undefined;
+  if (!USER_ID_PATTERN.test(userId) || userId === PRIMARY_USER_ID) {
+    return secureText("Invalid userId", 400);
+  }
+  await createUser(env, userId, displayName);
+  const { rawToken, expiresAt } = await createInvite(env, userId, displayName, INVITE_TTL_MS);
+  const url = new URL(request.url);
+  const headers = applySecurityHeaders(new Headers({ "Content-Type": "application/json" }));
+  return new Response(
+    JSON.stringify({ userId, joinUrl: `${url.origin}/join/${rawToken}`, expiresAt }),
+    { headers }
+  );
+}
+
+export async function joinPage(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") {
+    return new Response("Method not allowed", { status: 405, headers: { Allow: "GET" } });
+  }
+  const url = new URL(request.url);
+  const rawToken = decodeURIComponent(url.pathname.slice("/join/".length));
+  if (!rawToken || rawToken.includes("/")) {
+    return html("Invite not found", "<p>This invite link is invalid.</p>", { status: 404 });
+  }
+  const invite = await findInvite(env, rawToken);
+  if (!invite) {
+    return html(
+      "Invite not valid",
+      "<p>This invite link is invalid, has expired, or has already been used. Ask the person who invited you for a fresh link.</p>",
+      { status: 404 }
+    );
+  }
+  const inviteHash = await hashSecret(rawToken);
+
+  // The invitee's personal MCP API key is minted once per invite and kept
+  // encrypted, so revisiting this page shows the same key.
+  const keyConfigKey = `join_key:${inviteHash}`;
+  let rawKey: string | undefined;
+  const storedKey = await getConfig(env, keyConfigKey);
+  if (storedKey) {
+    try {
+      rawKey = (await decryptJson<{ rawKey: string }>(storedKey, env.TOKEN_ENCRYPTION_KEY)).rawKey;
+    } catch {
+      rawKey = undefined;
+    }
+  }
+  if (!rawKey) {
+    rawKey = await createApiKey(env, invite.userId, "invite");
+    await setConfig(env, keyConfigKey, await encryptJson({ rawKey }, env.TOKEN_ENCRYPTION_KEY));
+  }
+
+  const sessionToken = await createSetupSession(env.SETUP_TOKEN);
+  const session = await verifySetupSession(sessionToken, env.SETUP_TOKEN);
+  if (!session) return secureText("Could not create a setup session", 500);
+  await setConfig(
+    env,
+    joinBindingKey(session.sessionId),
+    JSON.stringify({ userId: invite.userId, inviteHash } satisfies JoinBinding)
+  );
+
+  const greeting = invite.displayName ? ` for ${escapeHtml(invite.displayName)}` : "";
+  return html(
+    "Connect your Apple Music",
+    `<p>You have been invited${greeting} to use this Apple Music MCP server with your own Apple Music account.</p>
+     <h2>1. Save your personal API key</h2>
+     <p>Configure your MCP client with the endpoint <code>${escapeHtml(url.origin)}/mcp</code> and this key as a Bearer token. Keep it private — it identifies your account on this server.</p>
+     <pre>${escapeHtml(rawKey)}</pre>
+     <h2>2. Connect Apple Music</h2>
+     <p>Continue to the authorization page and sign in with your own Apple ID. Your listening data stays separate from other accounts on this server.</p>
+     <p><a href="/setup">Continue to connect Apple Music →</a></p>`,
+    { cookie: setupSessionCookie(sessionToken, url.protocol === "https:") }
+  );
 }

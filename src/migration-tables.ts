@@ -10,10 +10,40 @@ export const migrationTables = {
   "auth_tokens": {
     "columns": [
       "provider",
+      "user_id",
       "encrypted_token_json",
       "updated_at"
     ],
     "primaryKey": "provider"
+  },
+  "users": {
+    "columns": [
+      "id",
+      "display_name",
+      "created_at"
+    ],
+    "primaryKey": "id"
+  },
+  "api_keys": {
+    "columns": [
+      "key_hash",
+      "user_id",
+      "label",
+      "created_at",
+      "revoked_at"
+    ],
+    "primaryKey": "key_hash"
+  },
+  "invites": {
+    "columns": [
+      "token_hash",
+      "user_id",
+      "display_name",
+      "expires_at",
+      "used_at",
+      "created_at"
+    ],
+    "primaryKey": "token_hash"
   },
   "config": {
     "columns": [

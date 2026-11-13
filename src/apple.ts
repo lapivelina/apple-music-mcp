@@ -1,5 +1,5 @@
 import { signEs256Jwt } from "./crypto";
-import { getConfig, loadAppleToken, setConfig } from "./storage";
+import { getConfig, loadAppleToken, PRIMARY_USER_ID, setConfig } from "./storage";
 import type { AppleListResponse, AppleResource, AppleTokenSet, CloudflareEnv, Env } from "./types";
 import {
   AppleMusicApiError,
@@ -39,13 +39,15 @@ export type SongResolutionBatch = {
 
 export class AppleMusicApi {
   private readonly env: Env;
+  private readonly userId: string;
   private storefront?: Promise<string>;
   private userToken?: Promise<AppleTokenSet | null>;
   private upstreamRequests = 0;
   private cooldownUntil = 0;
 
-  constructor(env: Env) {
+  constructor(env: Env, userId: string = PRIMARY_USER_ID) {
     this.env = env;
+    this.userId = userId;
   }
 
   async developerToken(): Promise<string> {
@@ -274,7 +276,7 @@ export class AppleMusicApi {
       Authorization: `Bearer ${await this.developerToken()}`
     };
     if (options.user) {
-      const token = await (this.userToken ??= loadAppleToken(this.env));
+      const token = await (this.userToken ??= loadAppleToken(this.env, this.userId));
       if (!token?.musicUserToken) throw new Error("Apple Music is not connected. Open /setup with the setup token and authorize Apple Music.");
       headers["Music-User-Token"] = token.musicUserToken;
     }

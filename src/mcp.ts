@@ -3,7 +3,7 @@ import { z } from "zod";
 import { analyticsStatus, appleReplaySummary, listeningSummary, recentListeningHistory, refreshRecentListeningAnalytics, topListeningStats } from "./analytics";
 import { AppleMusicApi, hasAppleCredentials } from "./apple";
 import { compactResource, compactResources, jsonText } from "./format";
-import { audit, appleTokenStatus } from "./storage";
+import { audit, appleTokenStatus, PRIMARY_USER_ID } from "./storage";
 import { timeframePresetValues } from "./timeframe";
 import type { ToolContext } from "./types";
 import { AppleMusicWriteUncertainError } from './apple-transport';
@@ -65,6 +65,16 @@ function toolConfig<T>(name: string, build: () => T): T {
   return toolConfigs.get(name) as T;
 }
 
+function historyUnavailable(ctx: ToolContext) {
+  return {
+    available: false,
+    userId: ctx.userId,
+    reason:
+      "Observed listening history (the D1 ledger) is currently collected for the primary account only. " +
+      "Live tools — status, heavy rotation, recommendations, Replay, playlists, catalog search, and live recently played — work for every connected account."
+  };
+}
+
 export function createAppleMusicMcp(ctx: ToolContext, onlyTool?: string): McpServer {
   const server = new McpServer({
     name: "apple-music-mcp",
@@ -80,8 +90,8 @@ export function createAppleMusicMcp(ctx: ToolContext, onlyTool?: string): McpSer
       inputSchema: {}
     })),
     async () => {
-      const api = new AppleMusicApi(ctx.env);
-      const token = await appleTokenStatus(ctx.env);
+      const api = new AppleMusicApi(ctx.env, ctx.userId);
+      const token = await appleTokenStatus(ctx.env, ctx.userId);
       let storefront: string | undefined;
       if (token.connected) storefront = await api.userStorefront();
       const result = {
@@ -112,6 +122,18 @@ export function createAppleMusicMcp(ctx: ToolContext, onlyTool?: string): McpSer
       }
     })),
     async ({ preset, start, end, timeZone, asOf, limit, cursor, refreshFirst }) => {
+      if (ctx.userId !== PRIMARY_USER_ID) {
+        const api = new AppleMusicApi(ctx.env, ctx.userId);
+        const resources = await api.recentlyPlayed(Math.min(limit, 30));
+        const result = {
+          source: "apple_live_recently_played",
+          userId: ctx.userId,
+          note: "Live Apple window for this account (at most 30 tracks). Observed-history collection currently covers the primary account only, so timeframe and cursor do not apply here.",
+          tracks: compactResources(resources)
+        };
+        await audit(ctx.env, ctx.clientId, "apple_music_recently_played", "read", { userId: ctx.userId, live: true, count: result.tracks.length });
+        return jsonText(result);
+      }
       if (refreshFirst) await refreshRecentListeningAnalytics(ctx.env);
       const result = await recentListeningHistory(ctx.env, { preset, start, end, timeZone, asOf, limit, cursor });
       await audit(ctx.env, ctx.clientId, "apple_music_recently_played", "read", {
@@ -139,7 +161,7 @@ export function createAppleMusicMcp(ctx: ToolContext, onlyTool?: string): McpSer
       }
     })),
     async ({ limit }) => {
-      const api = new AppleMusicApi(ctx.env);
+      const api = new AppleMusicApi(ctx.env, ctx.userId);
       const items = await api.heavyRotation(limit);
       await audit(ctx.env, ctx.clientId, "apple_music_heavy_rotation", "read", { limit, count: items.length });
       return jsonText({ items: compactResources(items), source: 'apple_music_heavy_rotation', order: 'apple_returned_order', isPlayCountRanking: false,
@@ -158,7 +180,7 @@ export function createAppleMusicMcp(ctx: ToolContext, onlyTool?: string): McpSer
       }
     })),
     async ({ limit }) => {
-      const api = new AppleMusicApi(ctx.env);
+      const api = new AppleMusicApi(ctx.env, ctx.userId);
       const items = await api.recommendations(limit);
       await audit(ctx.env, ctx.clientId, "apple_music_recommendations", "read", { limit, count: items.length });
       return jsonText({ items: compactResources(items) });
@@ -191,7 +213,7 @@ export function createAppleMusicMcp(ctx: ToolContext, onlyTool?: string): McpSer
       }
     })),
     async ({ limit }) => {
-      const api = new AppleMusicApi(ctx.env);
+      const api = new AppleMusicApi(ctx.env, ctx.userId);
       const playlists = await api.listPlaylists(limit);
       await audit(ctx.env, ctx.clientId, "apple_music_list_playlists", "read", { limit, count: playlists.length });
       return jsonText({ playlists: compactResources(playlists) });
@@ -210,7 +232,7 @@ export function createAppleMusicMcp(ctx: ToolContext, onlyTool?: string): McpSer
       }
     })),
     async ({ playlistId, limit }) => {
-      const api = new AppleMusicApi(ctx.env);
+      const api = new AppleMusicApi(ctx.env, ctx.userId);
       const tracks = await api.playlistTracks(playlistId, limit);
       await audit(ctx.env, ctx.clientId, "apple_music_get_playlist_tracks", "read", { playlistId, limit, count: tracks.length });
       return jsonText({ playlistId, tracks: compactResources(tracks) });
@@ -230,7 +252,7 @@ export function createAppleMusicMcp(ctx: ToolContext, onlyTool?: string): McpSer
       }
     })),
     async ({ term, types, limit }) => {
-      const api = new AppleMusicApi(ctx.env);
+      const api = new AppleMusicApi(ctx.env, ctx.userId);
       const results = await api.searchCatalog(term, types, limit);
       await audit(ctx.env, ctx.clientId, "apple_music_search_catalog", "read", { term, types, limit });
       return jsonText(Object.fromEntries(Object.entries(results).map(([key, values]) => [key, compactResources(values)])));
@@ -249,7 +271,7 @@ export function createAppleMusicMcp(ctx: ToolContext, onlyTool?: string): McpSer
       }
     })),
     async ({ name, description }) => {
-      const api = new AppleMusicApi(ctx.env);
+      const api = new AppleMusicApi(ctx.env, ctx.userId);
       let playlist;
       try { playlist = await api.createPlaylist(name, description); }
       catch (error) {
@@ -283,7 +305,7 @@ export function createAppleMusicMcp(ctx: ToolContext, onlyTool?: string): McpSer
       }
     })),
     async ({ playlistId, tracks, dryRun, allowPartial }) => {
-      const api = new AppleMusicApi(ctx.env);
+      const api = new AppleMusicApi(ctx.env, ctx.userId);
       const [existing, resolution] = await Promise.all([
         api.playlistTracks(playlistId, 500),
         api.resolveSongIds(tracks)
@@ -372,6 +394,7 @@ export function createAppleMusicMcp(ctx: ToolContext, onlyTool?: string): McpSer
       }
     })),
     async ({ limit }) => {
+      if (ctx.userId !== PRIMARY_USER_ID) return jsonText(historyUnavailable(ctx));
       const result = await refreshRecentListeningAnalytics(ctx.env, { limit });
       await audit(ctx.env, ctx.clientId, "apple_music_analytics_refresh", "write", result);
       return jsonText(result);
@@ -387,6 +410,7 @@ export function createAppleMusicMcp(ctx: ToolContext, onlyTool?: string): McpSer
       inputSchema: {}
     })),
     async () => {
+      if (ctx.userId !== PRIMARY_USER_ID) return jsonText(historyUnavailable(ctx));
       const result = await analyticsStatus(ctx.env);
       await audit(ctx.env, ctx.clientId, "apple_music_analytics_status", "read", {
         listenEvents: result.listenEvents,
@@ -408,6 +432,7 @@ export function createAppleMusicMcp(ctx: ToolContext, onlyTool?: string): McpSer
       }
     })),
     async ({ preset, start, end, timeZone, asOf, refreshFirst }) => {
+      if (ctx.userId !== PRIMARY_USER_ID) return jsonText(historyUnavailable(ctx));
       if (refreshFirst) await refreshRecentListeningAnalytics(ctx.env);
       const timeframe = { preset, start, end, timeZone, asOf };
       const result = await listeningSummary(ctx.env, timeframe);
@@ -430,6 +455,7 @@ export function createAppleMusicMcp(ctx: ToolContext, onlyTool?: string): McpSer
       }
     })),
     async ({ preset, start, end, timeZone, asOf, kind, limit, refreshFirst }) => {
+      if (ctx.userId !== PRIMARY_USER_ID) return jsonText(historyUnavailable(ctx));
       if (refreshFirst) await refreshRecentListeningAnalytics(ctx.env);
       const timeframe = { preset, start, end, timeZone, asOf };
       const result = await topListeningStats(ctx.env, timeframe, kind, limit);

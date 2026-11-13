@@ -35,6 +35,7 @@ export interface AppleTokenSet {
 export interface ToolContext {
   env: Env;
   clientId: string;
+  userId: string;
 }
 
 export interface AppleArtwork {

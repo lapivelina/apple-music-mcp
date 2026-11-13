@@ -2,6 +2,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { refreshRecentListeningAnalytics } from "./analytics";
 import { createAppleMusicMcp } from "./mcp";
 import { saveAppleAuthToken, setupPage } from "./setup";
+import { PRIMARY_USER_ID } from "./storage";
 import { requireSitesOwner } from "./sites-access";
 import type { Env } from "./types";
 import { siteOperation, type OperationsEnv } from "./sites-operations";
@@ -26,7 +27,7 @@ export default {
       const origin = request.headers.get("Origin");
       if (origin && origin !== url.origin) return new Response("Cross-origin MCP requests are not allowed", { status: 403 });
       if (env.CLOUDFLARE_MCP_URL) return forwardSiteMcp(request, env.CLOUDFLARE_MCP_URL);
-      const server = createAppleMusicMcp({ env, clientId: request.headers.get("oai-authenticated-user-id")! });
+      const server = createAppleMusicMcp({ env, clientId: request.headers.get("oai-authenticated-user-id")!, userId: PRIMARY_USER_ID });
       const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true, maxRequestBodySize: 1_048_576 });
       try {
         await server.connect(transport);

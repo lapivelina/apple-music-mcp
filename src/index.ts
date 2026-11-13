@@ -3,8 +3,8 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { AppleMusicApi, type SongLookupInput } from './apple';
 import { refreshRecentListeningAnalytics } from "./analytics";
 import { applySecurityHeaders, HttpRequestError, readCookie, readUrlEncodedForm, secureEqual } from "./http-security";
-import { saveAppleAuthToken, setupMinimalPage, setupPage } from "./setup";
-import { purgeAuditLog } from "./storage";
+import { adminCreateInvite, joinPage, saveAppleAuthToken, setupMinimalPage, setupPage } from "./setup";
+import { PRIMARY_USER_ID, purgeAuditLog, resolveApiKey } from "./storage";
 import { forwardSitesCollection } from "./sites-trigger";
 import { claimScheduledMaintenance } from "./collector-control";
 import type { CloudflareEnv as Env, ToolContext } from "./types";
@@ -30,7 +30,8 @@ const apiHandler = {
     if (originError) return originError;
     const props = (ctx.props ?? {}) as AuthenticatedProps;
     const clientId = props.clientId ?? props.authentication ?? props.userId ?? "authenticated-client";
-    return handleMcp(request, { env, clientId });
+    const userId = !props.userId || props.userId === "owner" ? PRIMARY_USER_ID : props.userId;
+    return handleMcp(request, { env, clientId, userId });
   }
 } satisfies ExportedHandler<Env>;
 
@@ -48,6 +49,8 @@ const defaultHandler = {
     }
     if (url.pathname === "/setup") return setupPage(request, env);
     if (url.pathname === "/setup-min") return setupMinimalPage(request, env);
+    if (url.pathname.startsWith("/join/")) return joinPage(request, env);
+    if (url.pathname === "/admin/invites" && request.method === "POST") return adminCreateInvite(request, env);
     if (url.pathname === "/auth/apple/token" && request.method === "POST") return saveAppleAuthToken(request, env);
     if (url.pathname === "/authorize") return authorize(request, env);
 
@@ -56,9 +59,9 @@ const defaultHandler = {
     if (url.pathname === "/sse") {
       const originError = rejectCrossOriginRequest(request);
       if (originError) return originError;
-      const authError = await requireMcpApiKey(request, env);
-      if (authError) return authError;
-      return handleMcp(request, { env, clientId: "static-bearer" });
+      const callerUserId = await resolveMcpCaller(request, env);
+      if (!callerUserId) return new Response("Unauthorized", { status: 401 });
+      return handleMcp(request, { env, clientId: "static-bearer", userId: callerUserId });
     }
 
     return new Response("Not found", { status: 404 });
@@ -88,7 +91,11 @@ async function getOAuthProvider(): Promise<OAuthProvider<Env>> {
   // client, including clients that do not implement OAuth discovery.
   async resolveExternalToken({ token, env }) {
     if (env.MCP_API_KEY && await secureEqual(token, env.MCP_API_KEY)) {
-      return { props: { userId: "owner", clientId: "static-bearer", authentication: "static-bearer" } };
+      return { props: { userId: PRIMARY_USER_ID, clientId: "static-bearer", authentication: "static-bearer" } };
+    }
+    const apiKeyUserId = await resolveApiKey(env, token);
+    if (apiKeyUserId) {
+      return { props: { userId: apiKeyUserId, clientId: "personal-api-key", authentication: "personal-api-key" } };
     }
     return null;
   }
@@ -165,10 +172,10 @@ async function authorize(request: Request, env: Env): Promise<Response> {
 
     const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
       request: oauthRequest,
-      userId: "owner",
+      userId: PRIMARY_USER_ID,
       metadata: { clientName: client?.clientName ?? "MCP client" },
       scope: oauthRequest.scope.filter((scope) => scope === "apple_music"),
-      props: { userId: "owner", clientId: oauthRequest.clientId, authentication: "oauth" }
+      props: { userId: PRIMARY_USER_ID, clientId: oauthRequest.clientId, authentication: "oauth" }
     });
     // Some embedded OAuth browsers do not follow a cross-origin redirect after
     // a form POST. A refresh response completes the same top-level navigation.
@@ -239,11 +246,11 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#039;");
 }
 
-async function requireMcpApiKey(request: Request, env: Env): Promise<Response | undefined> {
-  if (!env.MCP_API_KEY) return new Response("Server missing MCP_API_KEY", { status: 500 });
+async function resolveMcpCaller(request: Request, env: Env): Promise<string | undefined> {
   const token = bearerToken(request);
-  if (token && await secureEqual(token, env.MCP_API_KEY)) return undefined;
-  return new Response("Unauthorized", { status: 401 });
+  if (!token) return undefined;
+  if (env.MCP_API_KEY && await secureEqual(token, env.MCP_API_KEY)) return PRIMARY_USER_ID;
+  return resolveApiKey(env, token);
 }
 
 function cookieHeader(name: string, value: string, maxAge: number, secure: boolean): string {
