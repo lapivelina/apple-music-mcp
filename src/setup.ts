@@ -92,7 +92,7 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
       "default-src 'none'",
       `script-src 'nonce-${nonce}' https://js-cdn.music.apple.com`,
       `style-src 'nonce-${nonce}'`,
-      "connect-src 'self' https://*.music.apple.com",
+      "connect-src 'self' https://*.music.apple.com https://*.apple.com",
       "frame-src https://*.music.apple.com",
       "img-src data: https://*.apple.com https://*.mzstatic.com",
       "frame-ancestors 'none'",
