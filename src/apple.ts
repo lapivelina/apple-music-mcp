@@ -61,7 +61,7 @@ export class AppleMusicApi {
     if (developerTokenCache?.key === cacheKey && developerTokenCache.expiresAt > now + 60) return developerTokenCache.token;
     const token = signEs256Jwt(
       { alg: "ES256", kid: this.env.APPLE_KEY_ID },
-      { iss: this.env.APPLE_TEAM_ID, iat: now, exp: now + ttl },
+      { iss: this.env.APPLE_TEAM_ID, iat: now, exp: now + ttl, aud: "music" },
       this.env.APPLE_PRIVATE_KEY
     );
     developerTokenCache = { key: cacheKey, expiresAt: now + ttl, token };
