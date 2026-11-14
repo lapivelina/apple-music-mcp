@@ -47,6 +47,29 @@ const defaultHandler = {
         setup: "/setup"
       });
     }
+    if (url.pathname === "/credits") {
+      const creditsHtml = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Credits — media.izumiz.dev</title>
+</head>
+<body>
+<main>
+<h1>Credits</h1>
+<p>media.izumiz.dev is a personal Apple Music MCP service. It uses data and services provided by:</p>
+<ul>
+<li><a href="https://www.apple.com/apple-music/">Apple Music</a> — catalog, library and playback metadata via the Apple Music API.</li>
+<li><a href="https://getsongbpm.com">GetSongBPM</a> — BPM and musical key data by <a href="https://getsongbpm.com">GetSongBPM.com</a>.</li>
+</ul>
+</main>
+</body>
+</html>`;
+      return new Response(creditsHtml, {
+        headers: { "content-type": "text/html; charset=utf-8" }
+      });
+    }
     if (url.pathname === "/setup") return setupPage(request, env);
     if (url.pathname === "/setup-min") return setupMinimalPage(request, env);
     if (url.pathname.startsWith("/join/")) return joinPage(request, env);
